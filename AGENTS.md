@@ -1,16 +1,15 @@
 # overseer-driver — agent instructions
 
-This is the companion CLI to the `overseer` skill in the
-[agent-skills][agent-skills] repo. That skill's `SKILL.md` defines the
-abstract interface this CLI implements (spawn/read/prompt/list/
-rename/interrupt/status/notify); `resources/<harness>.md` files there
-document what a driver's mechanics look like in prose, for harnesses
-this CLI hasn't been ported to yet or for an LLM reasoning about a
-harness directly. Keep the two in sync: a change to one side's
-contract (a flag, a JSON field, a primitive's semantics) is a change
-to both.
+This is the companion CLI to the [`overseer`][overseer] skill.
+That skill's `SKILL.md` defines the abstract interface this CLI
+implements (spawn/read/prompt/list/rename/interrupt/status/notify);
+`resources/<harness>.md` files there document what a driver's
+mechanics look like in prose, for harnesses this CLI hasn't been
+ported to yet or for an LLM reasoning about a harness directly. Keep
+the two in sync: a change to one side's contract (a flag, a JSON
+field, a primitive's semantics) is a change to both.
 
-[agent-skills]: https://github.com/photuris/agent-skills
+[overseer]: https://github.com/photuris/overseer
 
 ## Conventions
 

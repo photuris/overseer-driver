@@ -7,11 +7,11 @@ tested Go, instead of prose an LLM has to correctly re-derive on every
 call. `status` stays best-effort where a harness has no native
 agent-awareness (see below).
 
-[overseer]: https://github.com/photuris/agent-skills/tree/main/shared/overseer
+[overseer]: https://github.com/photuris/overseer
 
 ## Status
 
-Early / private. Two harnesses implemented:
+Early. Two harnesses implemented:
 
 | Harness | Status |
 |---------|--------|
@@ -24,8 +24,9 @@ Early / private. Two harnesses implemented:
 go install github.com/photuris/overseer-driver/cmd/overseer-driver@latest
 ```
 
-Prebuilt binaries: none published yet (this repo is still private;
-see the overseer skill's plan for public release).
+Without Go: download the archive for your OS/arch from the
+[latest release](https://github.com/photuris/overseer-driver/releases/latest),
+extract it, and put `overseer-driver` on your `PATH`.
 
 ## Usage
 
