@@ -90,8 +90,18 @@ func (d *Driver) Split(ctx context.Context, target driver.Handle, direction driv
 	return newPane, nil
 }
 
-func (d *Driver) Read(ctx context.Context, target driver.Handle, lines int) (string, error) {
-	out, err := run(ctx, "capture-pane", "-t", string(target), "-p", "-S", fmt.Sprintf("-%d", lines))
+func (d *Driver) Read(ctx context.Context, target driver.Handle, lines int, ansi bool) (string, error) {
+	args := []string{"capture-pane", "-t", string(target), "-p", "-S", fmt.Sprintf("-%d", lines)}
+	if ansi {
+		// -e keeps styling escape codes; -J preserves trailing spaces
+		// and joins wrapped lines, which -e needs to render right.
+		// Verified: the closing reset for a dim/^[[2m run can land at
+		// the start of the *next* captured line rather than the end
+		// of the styled one — a caller matching dim text should not
+		// assume the reset appears on the same line.
+		args = append(args, "-e", "-J")
+	}
+	out, err := run(ctx, args...)
 	if err != nil {
 		return "", fmt.Errorf("tmux read %s: %w", target, err)
 	}
@@ -161,7 +171,7 @@ func (d *Driver) Interrupt(ctx context.Context, target driver.Handle, kill bool)
 }
 
 func (d *Driver) Status(ctx context.Context, target driver.Handle) (driver.StatusResult, error) {
-	tail, err := d.Read(ctx, target, 15)
+	tail, err := d.Read(ctx, target, 15, false)
 	if err != nil {
 		return driver.StatusResult{}, err
 	}

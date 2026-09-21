@@ -23,9 +23,6 @@ func runSpawn(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 
 	handle, err := d.Spawn(ctx, *name, command)
-	if err != nil {
-		return fail(stderr, "%v", err)
-	}
 
-	return writeJSON(stdout, map[string]any{"handle": string(handle)})
+	return reportStart(stdout, stderr, handle, err)
 }

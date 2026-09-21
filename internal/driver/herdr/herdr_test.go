@@ -69,11 +69,53 @@ func TestSpawnReadStatusRawFallback(t *testing.T) {
 		t.Errorf("Status().Status = %q, want Unknown for a pane with no recognized agent", result.Status)
 	}
 
-	out, err := d.Read(ctx, handle, 10)
+	out, err := d.Read(ctx, handle, 10, false)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
 	_ = out // a bare shell prompt has no fixed expected text; reaching here without error is the check
+}
+
+func TestReadAnsiPreservesEscapeCodes(t *testing.T) {
+	requireLiveHerdr(t)
+
+	ctx := context.Background()
+	d := New()
+	name := testName(t)
+
+	handle, err := d.Spawn(ctx, name, []string{"bash", "--noprofile", "--norc"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = d.Interrupt(ctx, handle, true)
+	})
+	time.Sleep(500 * time.Millisecond)
+
+	// This pane has no recognized agent, so Prompt (which always
+	// targets one) doesn't apply here — send text the same way
+	// startInPane's raw fallback launches a command, via the
+	// package's own run() (this file is in package herdr).
+	if _, err := run(ctx, "pane", "run", string(handle), `printf '\033[2mdim\033[0m\n'`); err != nil {
+		t.Fatalf("pane run: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	plain, err := d.Read(ctx, handle, 10, false)
+	if err != nil {
+		t.Fatalf("Read(ansi=false): %v", err)
+	}
+	if strings.Contains(plain, "\x1b[") {
+		t.Errorf("Read(ansi=false) = %q, want escape codes stripped", plain)
+	}
+
+	styled, err := d.Read(ctx, handle, 10, true)
+	if err != nil {
+		t.Fatalf("Read(ansi=true): %v", err)
+	}
+	if !strings.Contains(styled, "\x1b[2m") {
+		t.Errorf("Read(ansi=true) = %q, want it to contain the dim escape code \\x1b[2m", styled)
+	}
 }
 
 func TestSplitSharesTabAndSurvivesSiblingKill(t *testing.T) {
@@ -135,6 +177,40 @@ func TestRenameKeepsHandle(t *testing.T) {
 	}
 }
 
+// TestSpawnReturnsHandleOnStartFailure reproduces the exact failure
+// reported from real use: `claude --version` is a known kind
+// (command[0] == "claude"), but it prints and exits immediately, so
+// `agent start` never sees it become ready and times out. Before this
+// was fixed, Spawn discarded the pane's handle on that error, leaving
+// a live tab the caller had no way to find or clean up.
+func TestSpawnReturnsHandleOnStartFailure(t *testing.T) {
+	requireLiveHerdr(t)
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude not installed")
+	}
+
+	ctx := context.Background()
+	d := New()
+	name := testName(t)
+
+	handle, err := d.Spawn(ctx, name, []string{"claude", "--version"})
+	if err == nil {
+		t.Cleanup(func() { _ = d.Interrupt(ctx, handle, true) })
+		t.Fatalf("Spawn(claude --version) succeeded; expected agent start to time out waiting for readiness")
+	}
+	if handle == "" {
+		t.Fatalf("Spawn(claude --version) returned no handle alongside its error %v; the pane exists and is now unreachable", err)
+	}
+	t.Cleanup(func() {
+		_ = d.Interrupt(ctx, handle, true)
+	})
+
+	// The handle must still be a real, addressable pane.
+	if _, statusErr := d.Status(ctx, handle); statusErr != nil {
+		t.Errorf("Status(%q) after a start failure: %v; handle was not actually usable", handle, statusErr)
+	}
+}
+
 func TestShellQuoteViaSpawn(t *testing.T) {
 	requireLiveHerdr(t)
 
@@ -152,7 +228,7 @@ func TestShellQuoteViaSpawn(t *testing.T) {
 	})
 	time.Sleep(500 * time.Millisecond)
 
-	out, err := d.Read(ctx, handle, 10)
+	out, err := d.Read(ctx, handle, 10, false)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}

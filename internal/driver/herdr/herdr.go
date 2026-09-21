@@ -13,9 +13,15 @@
 // command — Spawn and Split use it when command[0] names one of
 // those kinds, and fall back to the general-purpose pane run
 // otherwise (a shell alias or wrapper around a known kind, for
-// example). The fallback loses native Status and Prompt, matching
-// what the overseer skill's resources/herdr.md already documents
-// for that case.
+// example). Herdr's own recognition of what's running in a pane
+// looks to be screen-based, not tied to which of these two paths
+// launched it: a real agent CLI started via the raw fallback has
+// been observed getting picked up by Status/Prompt too, once Herdr's
+// detection catches up to it, not just the known-kind path — this
+// package does not force or wait for that detection, though, so
+// don't assume it landed; check Status first. What the fallback
+// reliably cannot do is start a Herdr-unrecognized program (a script,
+// a plain shell) as something Status/Prompt can address as an agent.
 package herdr
 
 import (
@@ -73,13 +79,17 @@ func (d *Driver) Spawn(ctx context.Context, name string, command []string) (driv
 		} `json:"result"`
 	}
 	if err := runJSON(ctx, &created, "tab", "create", "--workspace", workspace, "--cwd", cwd, "--label", name, "--no-focus"); err != nil {
+		// No pane was created at all: no handle to return.
 		return "", fmt.Errorf("herdr spawn %s: %w", name, err)
 	}
 	paneID := created.Result.RootPane.PaneID
 
 	handle, err := d.startInPane(ctx, paneID, name, command)
 	if err != nil {
-		return "", fmt.Errorf("herdr spawn %s: %w", name, err)
+		// The pane exists even though starting failed (e.g. agent
+		// start timed out waiting for readiness) — return it so the
+		// caller can inspect or clean it up. See driver.Driver.Spawn.
+		return handle, fmt.Errorf("herdr spawn %s: %w", name, err)
 	}
 
 	return handle, nil
@@ -110,22 +120,32 @@ func (d *Driver) Split(ctx context.Context, target driver.Handle, direction driv
 		} `json:"result"`
 	}
 	if err := runJSON(ctx, &split, "pane", "split", "--pane", string(target), "--direction", dir, "--cwd", cwd, "--no-focus"); err != nil {
+		// No pane was created at all: no handle to return.
 		return "", fmt.Errorf("herdr split %s: %w", target, err)
 	}
 	paneID := split.Result.Pane.PaneID
 
 	handle, err := d.startInPane(ctx, paneID, name, command)
 	if err != nil {
-		return "", fmt.Errorf("herdr split %s: %w", target, err)
+		// The pane exists even though starting failed — return it so
+		// the caller can inspect or clean it up. See driver.Driver.Spawn.
+		return handle, fmt.Errorf("herdr split %s: %w", target, err)
 	}
 
 	return handle, nil
 }
 
-// startInPane launches command in the already-created pane paneID,
-// as a recognized agent kind when command[0] is one, or as a raw
-// process otherwise, and returns paneID as the Handle either way.
+// startInPane launches command in the already-created pane paneID, as
+// a recognized agent kind when command[0] is one, or as a raw process
+// otherwise. It always returns paneID as the Handle, even on error —
+// the pane itself exists regardless of whether the launch inside it
+// finished; only the error return distinguishes "started" from "the
+// pane exists but starting failed" (e.g. agent start timing out
+// waiting for readiness, which folder-trust and other startup dialogs
+// trigger). See driver.Driver.Spawn.
 func (d *Driver) startInPane(ctx context.Context, paneID, name string, command []string) (driver.Handle, error) {
+	handle := driver.Handle(paneID)
+
 	if knownKinds[command[0]] {
 		args := []string{"agent", "start", name, "--kind", command[0], "--pane", paneID}
 		if len(command) > 1 {
@@ -133,29 +153,33 @@ func (d *Driver) startInPane(ctx context.Context, paneID, name string, command [
 			args = append(args, command[1:]...)
 		}
 		if _, err := run(ctx, args...); err != nil {
-			return "", err
+			return handle, err
 		}
 
-		return driver.Handle(paneID), nil
+		return handle, nil
 	}
 
 	if _, err := run(ctx, "pane", "run", paneID, textutil.ShellJoin(command)); err != nil {
-		return "", err
+		return handle, err
 	}
 	if _, err := run(ctx, "pane", "rename", paneID, name); err != nil {
-		return "", fmt.Errorf("(label): %w", err)
+		return handle, fmt.Errorf("(label): %w", err)
 	}
 
-	return driver.Handle(paneID), nil
+	return handle, nil
 }
 
-func (d *Driver) Read(ctx context.Context, target driver.Handle, lines int) (string, error) {
+func (d *Driver) Read(ctx context.Context, target driver.Handle, lines int, ansi bool) (string, error) {
 	// --source visible is required here: on herdr 0.8.2, --lines
 	// combined with the default "recent" source (or
 	// "recent-unwrapped") silently returns empty output instead of
 	// an error — verified directly against a live pane. Only
 	// --source visible actually honors --lines.
-	out, err := run(ctx, "pane", "read", string(target), "--source", "visible", "--lines", fmt.Sprintf("%d", lines))
+	args := []string{"pane", "read", string(target), "--source", "visible", "--lines", fmt.Sprintf("%d", lines)}
+	if ansi {
+		args = append(args, "--format", "ansi")
+	}
+	out, err := run(ctx, args...)
 	if err != nil {
 		return "", fmt.Errorf("herdr read %s: %w", target, err)
 	}
@@ -164,9 +188,12 @@ func (d *Driver) Read(ctx context.Context, target driver.Handle, lines int) (str
 }
 
 // Prompt submits text to the agent recognized in target's pane. It
-// only works when that pane holds a Herdr-recognized agent (the
-// knownKinds path in Spawn/Split); a raw fallback pane has nothing
-// for Herdr to submit to.
+// only works once Herdr recognizes an agent there — reliably true
+// right after the knownKinds path in Spawn/Split, and observed true
+// for a real agent CLI started via the raw fallback too (Herdr's
+// detection looks screen-based, not tied to launch path) — but never
+// true for a raw fallback pane running something Herdr doesn't
+// recognize at all. Check Status first if unsure.
 func (d *Driver) Prompt(ctx context.Context, target driver.Handle, text string) error {
 	if _, err := run(ctx, "agent", "prompt", string(target), text); err != nil {
 		return fmt.Errorf("herdr prompt %s: %w", target, err)

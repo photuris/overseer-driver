@@ -11,6 +11,7 @@ func runRead(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs, harness := harnessFlagSet("read")
 	target := fs.String("target", "", "handle of the agent to read")
 	lines := fs.Int("lines", 30, "number of recent lines to read")
+	ansi := fs.Bool("ansi", false, "preserve styling escape codes instead of stripping them")
 	if err := fs.Parse(args); err != nil {
 		return fail(stderr, "%v", err)
 	}
@@ -24,7 +25,7 @@ func runRead(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "%v", err)
 	}
 
-	out, err := d.Read(ctx, driver.Handle(*target), *lines)
+	out, err := d.Read(ctx, driver.Handle(*target), *lines, *ansi)
 	if err != nil {
 		return fail(stderr, "%v", err)
 	}

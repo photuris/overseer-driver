@@ -42,9 +42,6 @@ func runSplit(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 
 	handle, err := layouter.Split(ctx, driver.Handle(*target), dir, *name, command)
-	if err != nil {
-		return fail(stderr, "%v", err)
-	}
 
-	return writeJSON(stdout, map[string]any{"handle": string(handle)})
+	return reportStart(stdout, stderr, handle, err)
 }

@@ -113,3 +113,27 @@ func fail(stderr io.Writer, format string, args ...any) int {
 
 	return 1
 }
+
+// reportStart is shared by spawn and split: both can fail after
+// their pane/session already exists (Herdr's agent start timing out
+// waiting for readiness, notably), and a caller needs the handle
+// either way to inspect or clean up what didn't finish starting. It
+// writes {"handle":...,"started":...} to stdout whenever handle is
+// non-empty, success or not, then reports err on stderr with a
+// nonzero exit if there was one. handle == "" means nothing was
+// created at all: no stdout, matching every other failure path.
+func reportStart(stdout, stderr io.Writer, handle driver.Handle, startErr error) int {
+	if handle != "" {
+		if code := writeJSON(stdout, map[string]any{
+			"handle":  string(handle),
+			"started": startErr == nil,
+		}); code != 0 {
+			return code
+		}
+	}
+	if startErr != nil {
+		return fail(stderr, "%v", startErr)
+	}
+
+	return 0
+}

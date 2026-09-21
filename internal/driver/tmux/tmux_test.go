@@ -49,7 +49,7 @@ func TestSpawnReadPromptRoundTrip(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond)
 
-	out, err := d.Read(ctx, handle, 10)
+	out, err := d.Read(ctx, handle, 10, false)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -58,6 +58,43 @@ func TestSpawnReadPromptRoundTrip(t *testing.T) {
 	}
 	if strings.HasSuffix(out, "\n") || strings.HasSuffix(out, "\n\n") {
 		t.Errorf("Read output %q has untrimmed trailing blank lines", out)
+	}
+}
+
+func TestReadAnsiPreservesEscapeCodes(t *testing.T) {
+	requireTmux(t)
+
+	ctx := context.Background()
+	d := New(Patterns{})
+	name := sessionName(t)
+
+	handle, err := d.Spawn(ctx, name, []string{"bash", "--noprofile", "--norc"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = d.Interrupt(ctx, handle, true)
+	})
+
+	if err := d.Prompt(ctx, handle, `printf '\033[2mdim\033[0m\n'`); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	plain, err := d.Read(ctx, handle, 10, false)
+	if err != nil {
+		t.Fatalf("Read(ansi=false): %v", err)
+	}
+	if strings.Contains(plain, "\x1b[") {
+		t.Errorf("Read(ansi=false) = %q, want escape codes stripped", plain)
+	}
+
+	styled, err := d.Read(ctx, handle, 10, true)
+	if err != nil {
+		t.Fatalf("Read(ansi=true): %v", err)
+	}
+	if !strings.Contains(styled, "\x1b[2m") {
+		t.Errorf("Read(ansi=true) = %q, want it to contain the dim escape code \\x1b[2m", styled)
 	}
 }
 
@@ -291,7 +328,7 @@ func TestShellQuoteViaSpawn(t *testing.T) {
 	})
 	time.Sleep(300 * time.Millisecond)
 
-	out, err := d.Read(ctx, handle, 10)
+	out, err := d.Read(ctx, handle, 10, false)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}

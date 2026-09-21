@@ -33,12 +33,23 @@ type StatusResult struct {
 // Driver launches and controls agents on one multi-agent harness.
 type Driver interface {
 	// Spawn launches an agent named name running command and returns
-	// its handle.
+	// its handle. A driver whose launch has a separate "wait for
+	// ready" step after the underlying pane/session already exists
+	// (Herdr's agent start, notably) returns that handle even on
+	// error, since the pane is real and the caller needs it to
+	// inspect or clean up what didn't finish starting — Handle is
+	// only "" when nothing was created at all. A driver whose launch
+	// is atomic (tmux's new-session) never has that middle state, so
+	// this never arises for it.
 	Spawn(ctx context.Context, name string, command []string) (Handle, error)
 
 	// Read returns the agent's last lines of output, most recent
-	// last, with trailing blank lines trimmed.
-	Read(ctx context.Context, target Handle, lines int) (string, error)
+	// last, with trailing blank lines trimmed. With ansi, styling
+	// escape codes (color, dim, bold) are preserved instead of
+	// stripped — needed to tell a tool's own dim placeholder/
+	// suggestion text apart from text actually typed, which look
+	// identical once stripped to plain text.
+	Read(ctx context.Context, target Handle, lines int, ansi bool) (string, error)
 
 	// Prompt sends text to the agent, followed by a submit action
 	// (e.g. Enter). It does not wait for the agent to go idle;
@@ -80,6 +91,8 @@ const (
 type Layouter interface {
 	// Split spawns name/command as a new pane alongside target,
 	// arranged by direction, and returns the new pane's handle.
-	// target must already exist.
+	// target must already exist. Same partial-failure convention as
+	// Spawn: a handle for a pane that was created but didn't finish
+	// starting is still returned, alongside the error.
 	Split(ctx context.Context, target Handle, direction Direction, name string, command []string) (Handle, error)
 }
