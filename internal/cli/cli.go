@@ -14,12 +14,14 @@ import (
 	"os"
 
 	"github.com/photuris/overseer-driver/internal/driver"
+	"github.com/photuris/overseer-driver/internal/driver/herdr"
 	"github.com/photuris/overseer-driver/internal/driver/tmux"
 )
 
 // commands maps each subcommand name to its handler.
 var commands = map[string]func(ctx context.Context, args []string, stdout, stderr io.Writer) int{
 	"spawn":     runSpawn,
+	"split":     runSplit,
 	"read":      runRead,
 	"prompt":    runPrompt,
 	"list":      runList,
@@ -53,7 +55,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 func harnessFlagSet(name string) (*flag.FlagSet, *string) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 
-	return fs, fs.String("harness", "", "harness driver to use (tmux)")
+	return fs, fs.String("harness", "", "harness driver to use (tmux, herdr)")
 }
 
 // newDriver resolves --harness to a concrete driver.Driver.
@@ -68,6 +70,8 @@ func newDriver(harness, patternsPath string) (driver.Driver, error) {
 		}
 
 		return tmux.New(patterns), nil
+	case "herdr":
+		return herdr.New(), nil
 	case "":
 		return nil, fmt.Errorf("--harness is required")
 	default:

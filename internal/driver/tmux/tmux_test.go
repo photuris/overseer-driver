@@ -40,6 +40,10 @@ func TestSpawnReadPromptRoundTrip(t *testing.T) {
 		_ = d.Interrupt(ctx, handle, true)
 	})
 
+	if !strings.HasPrefix(string(handle), name+":") {
+		t.Errorf("Spawn() handle = %q, want it to start with %q", handle, name+":")
+	}
+
 	if err := d.Prompt(ctx, handle, `echo hello world`); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
@@ -88,7 +92,70 @@ func TestList(t *testing.T) {
 	}
 }
 
-func TestRename(t *testing.T) {
+func TestSplitSharesWindowAndSurvivesSiblingKill(t *testing.T) {
+	requireTmux(t)
+
+	ctx := context.Background()
+	d := New(Patterns{})
+	name := sessionName(t)
+
+	first, err := d.Spawn(ctx, name, []string{"bash", "--noprofile", "--norc"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = d.Interrupt(ctx, first, true)
+	})
+
+	second, err := d.Split(ctx, first, driver.DirectionRight, "second", []string{"bash", "--noprofile", "--norc"})
+	if err != nil {
+		t.Fatalf("Split: %v", err)
+	}
+
+	firstSession := strings.SplitN(string(first), ":", 2)[0]
+	secondSession := strings.SplitN(string(second), ":", 2)[0]
+	if firstSession != secondSession {
+		t.Errorf("Split() handle %q is not in the same session as %q", second, first)
+	}
+	if second == first {
+		t.Errorf("Split() returned the same handle as its target: %q", second)
+	}
+
+	handles, err := d.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(handles) < 2 {
+		t.Errorf("List() = %v, want at least 2 panes after Split", handles)
+	}
+
+	// Killing the second pane must not take the first one with it.
+	if err := d.Interrupt(ctx, second, true); err != nil {
+		t.Fatalf("Interrupt(second, kill=true): %v", err)
+	}
+
+	handles, err = d.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	foundFirst, foundSecond := false, false
+	for _, h := range handles {
+		if h == first {
+			foundFirst = true
+		}
+		if h == second {
+			foundSecond = true
+		}
+	}
+	if !foundFirst {
+		t.Errorf("List() = %v, want the sibling pane %q to survive", handles, first)
+	}
+	if foundSecond {
+		t.Errorf("List() = %v, want the killed pane %q to be gone", handles, second)
+	}
+}
+
+func TestRenameSetsTitleWithoutChangingHandle(t *testing.T) {
 	requireTmux(t)
 
 	ctx := context.Background()
@@ -99,28 +166,30 @@ func TestRename(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = d.Interrupt(ctx, handle, true)
+	})
 
-	newLabel := name + "-renamed"
-	newHandle, err := d.Rename(ctx, handle, newLabel)
+	newHandle, err := d.Rename(ctx, handle, "renamed-title")
 	if err != nil {
 		t.Fatalf("Rename: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = d.Interrupt(ctx, newHandle, true)
-	})
-
-	if string(newHandle) != newLabel {
-		t.Errorf("Rename() = %q, want %q", newHandle, newLabel)
+	if newHandle != handle {
+		t.Errorf("Rename() = %q, want the unchanged handle %q", newHandle, handle)
 	}
 
 	handles, err := d.List(ctx)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
+	found := false
 	for _, h := range handles {
 		if h == handle {
-			t.Errorf("List() still contains the pre-rename handle %q", handle)
+			found = true
 		}
+	}
+	if !found {
+		t.Errorf("List() = %v, want %q still addressable after rename", handles, handle)
 	}
 }
 
@@ -203,19 +272,30 @@ func TestStatusMatchesConfiguredPatterns(t *testing.T) {
 	}
 }
 
-func TestShellQuote(t *testing.T) {
-	cases := []struct {
-		in   []string
-		want string
-	}{
-		{[]string{"claude"}, "claude"},
-		{[]string{"claude", "--model", "opus"}, "claude --model opus"},
-		{[]string{"echo", "hello world"}, "echo 'hello world'"},
-		{[]string{"echo", "it's"}, `echo 'it'\''s'`},
+func TestShellQuoteViaSpawn(t *testing.T) {
+	requireTmux(t)
+
+	ctx := context.Background()
+	d := New(Patterns{})
+	name := sessionName(t)
+
+	// The apostrophe and semicolon here must survive ShellJoin's
+	// quoting intact for this to be valid bash at all.
+	script := `echo "it's a test"; exec bash --noprofile --norc`
+	handle, err := d.Spawn(ctx, name, []string{"bash", "-c", script})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
 	}
-	for _, c := range cases {
-		if got := shellJoin(c.in); got != c.want {
-			t.Errorf("shellJoin(%v) = %q, want %q", c.in, got, c.want)
-		}
+	t.Cleanup(func() {
+		_ = d.Interrupt(ctx, handle, true)
+	})
+	time.Sleep(300 * time.Millisecond)
+
+	out, err := d.Read(ctx, handle, 10)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !strings.Contains(out, "it's a test") {
+		t.Errorf("Read output %q does not contain the apostrophe-quoted text; quoting broke", out)
 	}
 }

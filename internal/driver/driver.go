@@ -62,3 +62,24 @@ type Driver interface {
 	// native agent-awareness approximate it; see StatusResult.
 	Status(ctx context.Context, target Handle) (StatusResult, error)
 }
+
+// Direction is which side of an existing pane/window a Split opens
+// its new one on.
+type Direction string
+
+const (
+	DirectionRight Direction = "right"
+	DirectionDown  Direction = "down"
+)
+
+// Layouter is implemented by a driver whose harness has a native
+// visual layout (panes, windows) worth arranging explicitly, instead
+// of isolating every agent in its own top-level session. Not every
+// Driver implements it; callers type-assert for it and fall back to
+// one-per-Spawn isolation when a driver doesn't.
+type Layouter interface {
+	// Split spawns name/command as a new pane alongside target,
+	// arranged by direction, and returns the new pane's handle.
+	// target must already exist.
+	Split(ctx context.Context, target Handle, direction Direction, name string, command []string) (Handle, error)
+}

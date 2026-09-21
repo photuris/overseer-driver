@@ -1,13 +1,14 @@
-// Package tmux implements the driver.Driver interface over the tmux
-// terminal multiplexer. tmux has no concept of "agent" — only
-// sessions and the text inside them — so Status is a best-effort
-// approximation backed by caller-supplied regex patterns, not a
-// native lookup. See the overseer skill's resources/tmux.md for the
-// reasoning.
+// Package tmux implements the driver.Driver interface (and
+// driver.Layouter) over the tmux terminal multiplexer. tmux has no
+// concept of "agent" — only sessions, windows, panes, and the text
+// inside them — so Status is a best-effort approximation backed by
+// caller-supplied regex patterns, not a native lookup. See the
+// overseer skill's resources/tmux.md for the reasoning.
 //
-// Each Spawn creates its own tmux session; a Handle is that session's
-// name. tmux's own window/pane splitting (multiple agents sharing one
-// window) is a layout concern this package does not implement.
+// A Handle is always a full "session:window.pane" address, the same
+// format Spawn and Split both return, so every pane is addressable
+// the same way whether it's alone in its own session or one of
+// several sharing a window.
 package tmux
 
 import (
@@ -20,7 +21,13 @@ import (
 	"time"
 
 	"github.com/photuris/overseer-driver/internal/driver"
+	"github.com/photuris/overseer-driver/internal/textutil"
 )
+
+// paneFormat is the tmux format string every command that creates or
+// lists a pane uses, so every Handle this package hands out has the
+// same shape.
+const paneFormat = "#{session_name}:#{window_index}.#{pane_index}"
 
 // Patterns are the regexes Status matches an agent's recent output
 // against. Blocked is checked before Idle. A zero-value Patterns
@@ -32,7 +39,7 @@ type Patterns struct {
 	Blocked []string `json:"blocked"`
 }
 
-// Driver drives tmux sessions.
+// Driver drives tmux sessions, windows, and panes.
 type Driver struct {
 	patterns Patterns
 }
@@ -43,15 +50,44 @@ func New(patterns Patterns) *Driver {
 }
 
 func (d *Driver) Spawn(ctx context.Context, name string, command []string) (driver.Handle, error) {
-	args := []string{"new-session", "-d", "-s", name}
+	args := []string{"new-session", "-d", "-s", name, "-P", "-F", paneFormat}
 	if len(command) > 0 {
-		args = append(args, shellJoin(command))
+		args = append(args, textutil.ShellJoin(command))
 	}
-	if _, err := run(ctx, args...); err != nil {
+	out, err := run(ctx, args...)
+	if err != nil {
 		return "", fmt.Errorf("tmux spawn %s: %w", name, err)
 	}
 
-	return driver.Handle(name), nil
+	return driver.Handle(strings.TrimSpace(out)), nil
+}
+
+// Split implements driver.Layouter: it adds name/command as a new
+// pane next to target, in the same window, instead of isolating it
+// in its own session.
+func (d *Driver) Split(ctx context.Context, target driver.Handle, direction driver.Direction, name string, command []string) (driver.Handle, error) {
+	flag := "-h"
+	if direction == driver.DirectionDown {
+		flag = "-v"
+	}
+
+	args := []string{"split-window", "-t", string(target), flag, "-P", "-F", paneFormat}
+	if len(command) > 0 {
+		args = append(args, textutil.ShellJoin(command))
+	}
+	out, err := run(ctx, args...)
+	if err != nil {
+		return "", fmt.Errorf("tmux split %s: %w", target, err)
+	}
+	newPane := driver.Handle(strings.TrimSpace(out))
+
+	if name != "" {
+		if _, err := run(ctx, "select-pane", "-t", string(newPane), "-T", name); err != nil {
+			return "", fmt.Errorf("tmux split %s (title): %w", target, err)
+		}
+	}
+
+	return newPane, nil
 }
 
 func (d *Driver) Read(ctx context.Context, target driver.Handle, lines int) (string, error) {
@@ -60,7 +96,7 @@ func (d *Driver) Read(ctx context.Context, target driver.Handle, lines int) (str
 		return "", fmt.Errorf("tmux read %s: %w", target, err)
 	}
 
-	return trimTrailingBlankLines(out), nil
+	return textutil.TrimTrailingBlankLines(out), nil
 }
 
 func (d *Driver) Prompt(ctx context.Context, target driver.Handle, text string) error {
@@ -75,7 +111,7 @@ func (d *Driver) Prompt(ctx context.Context, target driver.Handle, text string) 
 }
 
 func (d *Driver) List(ctx context.Context) ([]driver.Handle, error) {
-	out, err := run(ctx, "list-sessions", "-F", "#{session_name}")
+	out, err := run(ctx, "list-panes", "-a", "-F", paneFormat)
 	if err != nil {
 		if strings.Contains(err.Error(), "no server running") {
 			return nil, nil
@@ -94,17 +130,23 @@ func (d *Driver) List(ctx context.Context) ([]driver.Handle, error) {
 	return handles, nil
 }
 
+// Rename sets target's pane title. tmux panes have no separately
+// addressable name the way a session does, so this only changes a
+// cosmetic label — the returned Handle is always target, unchanged.
 func (d *Driver) Rename(ctx context.Context, target driver.Handle, label string) (driver.Handle, error) {
-	if _, err := run(ctx, "rename-session", "-t", string(target), label); err != nil {
+	if _, err := run(ctx, "select-pane", "-t", string(target), "-T", label); err != nil {
 		return "", fmt.Errorf("tmux rename %s: %w", target, err)
 	}
 
-	return driver.Handle(label), nil
+	return target, nil
 }
 
+// Interrupt, with kill, closes only target's own pane
+// (tmux kill-pane), never the whole session — a session or window
+// may hold sibling panes from other agents that must be left alone.
 func (d *Driver) Interrupt(ctx context.Context, target driver.Handle, kill bool) error {
 	if kill {
-		if _, err := run(ctx, "kill-session", "-t", string(target)); err != nil {
+		if _, err := run(ctx, "kill-pane", "-t", string(target)); err != nil {
 			return fmt.Errorf("tmux kill %s: %w", target, err)
 		}
 
@@ -178,38 +220,4 @@ func runOnce(ctx context.Context, args ...string) (string, error) {
 	}
 
 	return stdout.String(), nil
-}
-
-// trimTrailingBlankLines removes the blank lines tmux pads
-// capture-pane output with when the pane is taller than its content.
-func trimTrailingBlankLines(s string) string {
-	lines := strings.Split(s, "\n")
-	end := len(lines)
-	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
-		end--
-	}
-
-	return strings.Join(lines[:end], "\n")
-}
-
-// shellJoin renders command as a single POSIX shell command line,
-// since tmux new-session's trailing argument is run through a shell
-// as one string, not as a raw argv.
-func shellJoin(command []string) string {
-	quoted := make([]string, len(command))
-	for i, arg := range command {
-		quoted[i] = shellQuote(arg)
-	}
-
-	return strings.Join(quoted, " ")
-}
-
-var shellSafe = regexp.MustCompile(`^[A-Za-z0-9_./=-]+$`)
-
-func shellQuote(s string) string {
-	if s != "" && shellSafe.MatchString(s) {
-		return s
-	}
-
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
